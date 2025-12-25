@@ -34,6 +34,7 @@ Make the install script executable and run it. Clean up afterwards.
 
 ```
 chmod a+x /data/dbus-idm/install.sh
+mount -o remount,rw /
 /data/dbus-idm/install.sh
 rm main.zip
 ```
