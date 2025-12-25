@@ -8,8 +8,8 @@ if [ -d /service/$SERVICE_NAME ]; then
     rm /service/$SERVICE_NAME
 fi 
 
-# end the dbus-lambda process
-kill $(pgrep -f 'supervise dbus-lambda')
+# end the dbus-idm process
+kill $(pgrep -f 'supervise dbus-idm')
 
 # delete old logs if they exist  
 if [ -f $SCRIPT_DIR/current.log ]; then  

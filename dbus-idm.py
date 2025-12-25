@@ -31,23 +31,17 @@ import sys
 import os
 import time
 import configparser # for config/ini file
-from enum import Enum
-from math import log10
-if sys.version_info.major == 2:
-    import gobject
-else:
-    from gi.repository import GLib as gobject
+import struct
+from gi.repository import GLib as gobject
 
 sys.path.insert(1, os.path.join(os.path.dirname(__file__), '/opt/victronenergy/dbus-systemcalc-py/ext/velib_python'))
 from vedbus import VeDbusService
 
 from pymodbus.client.sync import ModbusTcpClient
-from pymodbus.constants import Endian
-from pymodbus.payload import BinaryPayloadDecoder
 from pymodbus.exceptions import ModbusException
 
-class DbusLAMBDAService:
-    def __init__(self, servicename, paths, productname='lambda', connection='LAMBDA Modbus Service'):
+class DbusIDMService:
+    def __init__(self, servicename, paths, productname='idm', connection='IDM Modbus Service'):
         config = self._getConfig()
         deviceinstance = int(config['DEFAULT']['Deviceinstance'])
         self.host = str(config['DEFAULT']['Host'])
@@ -55,8 +49,8 @@ class DbusLAMBDAService:
         self.acposition = int(config['DEFAULT']['Position'])
         self.model = str(config['DEFAULT']['Model'])
         self.timeout = int(config['DEFAULT']['Timeout'])
-
-        self._dbusservice = VeDbusService("{}.http_{:02d}".format(servicename, deviceinstance))
+        
+        self._dbusservice = VeDbusService(servicename, register=False)
         self._paths = paths
 
         logging.debug("%s /DeviceInstance = %d" % (servicename, deviceinstance))
@@ -69,8 +63,8 @@ class DbusLAMBDAService:
         # Create the mandatory objects
         self._dbusservice.add_path('/DeviceInstance', deviceinstance)
         self._dbusservice.add_path('/ProductId', 0xFFFF)
-        self._dbusservice.add_path('/ProductName', "LAMBDA " + self.model)
-        self._dbusservice.add_path('/CustomName', "LAMBDA " + self.model)
+        self._dbusservice.add_path('/ProductName', "IDM " + self.model)
+        self._dbusservice.add_path('/CustomName', "IDM " + self.model)
         self._dbusservice.add_path('/FirmwareVersion', "0")
         self._dbusservice.add_path('/Serial', "0")
         self._dbusservice.add_path('/HardwareVersion', self.model)
@@ -84,6 +78,8 @@ class DbusLAMBDAService:
 
         # last update
         self._lastUpdate = 0
+
+        self._dbusservice.register()
 
         # add _update function 'timer'
         gobject.timeout_add(self.timeout, self._update) # pause before the next request
@@ -118,65 +114,16 @@ class DbusLAMBDAService:
         logging.critical("Someone else updated %s to %s" % (path, value))
         # TODO: handle changes
 
-    def getLAMBDAData(self, register):
-        if register == "state": # UINT16, works
-            addr = 1003
-            format = "H"
-            count = 1
-            factor = 1
-            comment = "Operating State"
-            unit = ""
-        elif register == "temp": # INT16, works
-            addr = 1004
-            format = "h"
-            count = 1
-            factor = 0.01
-            comment = "Flow Temperature"
-            unit = "°C"
-        elif register == "ttemp": # INT16, doesn't work
-            addr = 1016
-            format = "h"
-            count = 1
-            factor = 0.1
-            comment = "Request Flow Temperature"
-            unit = "°C"
-        elif register == "power": # INT16, works
-            addr = 103
-            format = "h"
-            count = 1
-            factor = 1
-            comment = "Power Consumption"
-            unit = "W"
-        elif register == "energy": # INT32, works
-            addr = 1020
-            format = "i"
-            count = 2
-            factor = 0.001
-            comment = "Total Energy"
-            unit = "kWh"
-        
+    def getIDMf32s(self, addr):
         try:
-            rr = self._client.read_holding_registers(address=addr, count=count, slave=1)
+            result = self._client.read_input_registers(addr, count=2, unit=1)
         except ModbusException as exc:
             logging.error(f"Modbus exception: {exc!s}")
-
-        payload = BinaryPayloadDecoder.fromRegisters(rr.registers, byteorder=Endian.Big, wordorder=Endian.Big)
-        if register == "state": # UINT16, works
-            value = payload.decode_16bit_uint()
-        elif register == "temp": # INT16, works
-            value = payload.decode_16bit_int()
-        elif register == "ttemp": # INT16, doesn't work
-            value = payload.decode_16bit_int()
-        elif register == "power": # INT16, works
-            value = payload.decode_16bit_int()
-        elif register == "energy": # INT32, works
-            value = payload.decode_32bit_int()
-      
-        value = value * factor
-        if factor < 1:
-            value = round(value, int(log10(factor) * -1))
-        logging.debug(f"{comment} = {value} {unit}")
-
+        if result.isError():
+            print("Error:", result)
+        payload = struct.pack("<2H", result.registers[0], result.registers[1])
+        value = struct.unpack('<f', payload)[0]
+        logging.debug(f"{addr}: {value}")
         return value
    
     def _signOfLife(self):
@@ -188,11 +135,22 @@ class DbusLAMBDAService:
 
     def _update(self):
         try:
-            self._dbusservice['/State'] = self.getLAMBDAData("state")
-            self._dbusservice['/Temperature'] = self.getLAMBDAData("temp")
-            self._dbusservice['/TargetTemperature'] = self.getLAMBDAData("ttemp")
-            self._dbusservice['/Ac/Power'] = self.getLAMBDAData("power")
-            self._dbusservice['/Ac/Energy/Forward'] = self.getLAMBDAData("energy")
+            T_aussen_C = self.getIDMf32s(1000)
+            T_speicher_C = self.getIDMf32s(1008)
+            T_vorlaufA_C = self.getIDMf32s(1350)
+            T_vorlaufAsoll_C = self.getIDMf32s(1378)
+            E_heizen_kWh = self.getIDMf32s(1750)
+            E_warmwasser_kWh = self.getIDMf32s(1754)
+            P_mom_kW = self.getIDMf32s(1790)
+            P_in_kW = self.getIDMf32s(4122)
+            self._dbusservice['/State'] = 1
+            self._dbusservice['/Temperature'] = T_vorlaufA_C
+            self._dbusservice['/TargetTemperature'] = T_vorlaufAsoll_C
+            self._dbusservice['/Ac/Power'] = P_in_kW
+            self._dbusservice['/HeatOutput'] = P_mom_kW
+            self._dbusservice['/Ac/Energy/Forward'] = E_heizen_kWh + E_warmwasser_kWh
+            self._dbusservice['/PowerFactor'] = P_mom_kW/P_in_kW if P_in_kW > 0 else 0
+            self._dbusservice['/AirTemperature'] = T_aussen_C
 
             # logging
             logging.debug("Operating State (/State): %s" % (self._dbusservice['/State']))
@@ -247,13 +205,16 @@ def main():
         _n = lambda p, v: (str(v))
 
         # start our main-service
-        hp_output = DbusLAMBDAService(
-          servicename='com.victronenergy.heatpump',
+        hp_output = DbusIDMService(
+          servicename='com.victronenergy.heatpump.idm',
           paths={
             '/State': {'initial': 0, 'textformat': _n},
             '/Temperature': {'initial': 0, 'textformat': _degC},
             '/TargetTemperature': {'initial': 0, 'textformat': _degC},
+            '/AirTemperature': {'initial': 0, 'textformat': _degC},
             '/Ac/Power': {'initial': 0, 'textformat': _w},
+            '/HeatOutput': {'initial': 0, 'textformat': _w},
+            '/PowerFactor': {'initial': 0, 'textformat': _n},
             '/Ac/Energy/Forward': {'initial': 0, 'textformat': _kWh},
           }
         )

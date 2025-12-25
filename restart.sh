@@ -1,3 +1,3 @@
 #!/bin/bash
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
-kill $(pgrep -f 'supervise dbus-lambda')
+kill $(pgrep -f 'supervise dbus-idm')
